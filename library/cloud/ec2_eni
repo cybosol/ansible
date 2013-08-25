@@ -1,0 +1,172 @@
+#!/usr/bin/python
+#
+# This is a free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This Ansible library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this library.  If not, see <http://www.gnu.org/licenses/>.
+
+DOCUMENTATION = '''
+---
+module: ec2_eni
+short_description: Create and optionaly attach an Elastic Network Interface (ENI) to and instance
+description:
+    - Create and optionaly attach an Elastic Network Interface (ENI) to and instance
+version_added: "0.1"
+options:
+  instance:
+    description:
+      - instance ID if you wish to attach the interface to an instance. 
+    required: false
+    default: null 
+    aliases: []
+  private_ip_address:
+    description:
+      - Private IP address.
+    required: false
+    default: null
+    aliases: []
+  subnet_id:
+    description:
+      - Subnet to which this NIC belongs to
+    required: true
+    default: null
+    aliases: []
+    version_added: "1.3"
+  description:
+    description:
+      - ENI Description, if you wish to give any
+    required: false
+    default: null
+    aliases: []
+  sg_group:
+    description:
+      - Security group this ENI belongs to
+    required: false
+    default: null
+    aliases: []
+  device_index:
+    description:
+      - The index of the device for the network interface attachment on the instance.
+    required: false
+    default: null
+    aliases: []
+requirements: [ "boto" ]
+author: Mohammed Salih
+Reference: ec2_vol by Lester Wade
+'''
+
+EXAMPLES = '''
+# Create and attach action.
+- local_action: 
+    module: ec2_eni
+    instance: i-xxxxxxxx
+    private_ip_address: 172.31.0.20
+    subnet_id: subnet-xxxxxxxx
+
+'''
+
+
+import sys
+import time
+import epdb
+
+try:
+    import boto.ec2
+except ImportError:
+    print "failed=True msg='boto required for this module'"
+    sys.exit(1)
+
+def main():
+    module = AnsibleModule(
+        argument_spec = dict(
+            instance = dict(),
+            private_ip_address = dict(),
+            subnet_id = dict(required=True),
+            device_index = dict(),
+            sg_group = dict(),
+            description = dict(),
+            region = dict(),
+            zone = dict(),
+            ec2_url = dict(aliases=['EC2_URL']),
+            ec2_secret_key = dict(aliases=['EC2_SECRET_KEY']),
+            ec2_access_key = dict(aliases=['EC2_ACCESS_KEY']),
+        )
+    )
+
+    instance = module.params.get('instance')
+    private_ip_address = module.params.get('private_ip_address')
+    subnet_id = module.params.get('subnet_id')
+    device_index = module.params.get('device_index')
+    sg_group = module.params.get('sg_group')
+    description = module.params.get('description')
+    region = module.params.get('region')
+    zone = module.params.get('zone')
+    ec2_url = module.params.get('ec2_url')
+    ec2_secret_key = module.params.get('ec2_secret_key')
+    ec2_access_key = module.params.get('ec2_access_key')
+
+    # allow eucarc environment variables to be used if ansible vars aren't set
+    if not ec2_url and 'EC2_URL' in os.environ:
+        ec2_url = os.environ['EC2_URL']
+    if not ec2_secret_key and 'EC2_SECRET_KEY' in os.environ:
+        ec2_secret_key = os.environ['EC2_SECRET_KEY']
+    if not ec2_access_key and 'EC2_ACCESS_KEY' in os.environ:
+        ec2_access_key = os.environ['EC2_ACCESS_KEY']
+    
+    # If we have a region specified, connect to its endpoint.
+    if region: 
+        try:
+            ec2 = boto.ec2.connect_to_region(region, aws_access_key_id=ec2_access_key, aws_secret_access_key=ec2_secret_key)
+        except boto.exception.NoAuthHandlerFound, e:
+            module.fail_json(msg = str(e))
+    # Otherwise, no region so we fallback to the old connection method
+    else: 
+        try:
+            if ec2_url: # if we have an URL set, connect to the specified endpoint 
+                ec2 = boto.connect_ec2_endpoint(ec2_url, ec2_access_key, ec2_secret_key)
+            else: # otherwise it's Amazon.
+                ec2 = boto.connect_ec2(ec2_access_key, ec2_secret_key)
+        except boto.exception.NoAuthHandlerFound, e:
+            module.fail_json(msg = str(e))
+
+    # If no instance supplied, try ENI creation based on module parameters.
+    sg_group = [sg_group]
+    try:
+        eni = ec2.create_network_interface(subnet_id, private_ip_address, description, sg_group)
+        nicfilter = {"network-interface-id" : eni.id}
+	while ec2.get_all_network_interfaces(nicfilter)[0].status != 'available':
+            time.sleep(3)
+    except boto.exception.BotoServerError, e:
+        module.fail_json(msg = "%s: %s" % (e.error_code, e.error_message))
+
+    # Attach the new ENI if instance is specified.
+
+    if instance:
+        reservation = ec2.get_all_instances(instance_ids=instance)
+        inst = reservation[0].instances[0]
+        zone = inst.placement
+        try:
+            attach = ec2.attach_network_interface(eni.id, inst.id, device_index)
+            while ec2.get_all_network_interfaces(nicfilter)[0].status != 'in-use':
+                time.sleep(3)
+        except boto.exception.BotoServerError, e:
+            module.fail_json(msg = "%s: %s" % (e.error_code, e.error_message))           
+   
+
+    print json.dumps({
+        "eni_id": eni.id
+    })
+    sys.exit(0)
+
+# this is magic, see lib/ansible/module_common.py
+#<<INCLUDE_ANSIBLE_MODULE_COMMON>>
+
+main()
