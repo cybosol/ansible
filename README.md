@@ -1,4 +1,4 @@
 ansible
 =======
 
-Ansible libraries, playbooks etc.
+Ansible libraries and playbooks
